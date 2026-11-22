@@ -1,0 +1,46 @@
+# BOTS/POLC/fees.yaml
+# Typical project fees the chat quotes (BOTS/PRMT/rules.md, "Fees").
+#
+# Lou Munden gave these ranges on 2026-11-22. They are in yen; the
+# backend (BACK/tmpbot_backend/fees.py) converts them to US dollars and
+# euros with the European Central Bank reference rate, fetched once a
+# day, and rounds to two significant figures. The bot never converts
+# figures itself.
+#
+# fallback_rates: used until the first daily fetch succeeds, or while the
+# rate service is down. ECB reference rate of 2026-11-20.
+#
+# Author: Lou Munden
+# Copyright 2026 合同会社 TMP Climate and Lou Munden
+
+fallback_rates:
+  date: "2026-11-20"
+  usd_per_jpy: 0.0063034
+  eur_per_jpy: 0.0057356
+
+# kind: "range" (low to high), "floor_range" (not less than low, up to
+# high) or "floor" (never less than low). unit: "" or "a month" or
+# "a year" (appended after the figures). note: text before the figures.
+fees:
+  - label: "Risk briefing or screening"
+    kind: range
+    low_jpy: 3000000
+    high_jpy: 6000000
+  - label: "Bespoke analysis project"
+    kind: floor_range
+    low_jpy: 7500000
+    high_jpy: 20000000
+  - label: "Multi-year programme with new data and fieldwork"
+    kind: range
+    low_jpy: 30000000
+    high_jpy: 60000000
+    unit: "a year"
+  - label: "Advisory retainer, monthly, minimum six months"
+    kind: range
+    low_jpy: 1500000
+    high_jpy: 3000000
+    unit: "a month"
+  - label: "Software development (for example geospatial analytics or financial models)"
+    kind: floor
+    low_jpy: 7500000
+    note: "highly variable and very hard to quote in advance; such projects have never cost less than"

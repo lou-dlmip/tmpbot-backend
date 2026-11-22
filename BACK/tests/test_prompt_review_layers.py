@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from tmpbot_backend.prompt import load_layers
+from tmpbot_backend.fees import default_ranges_text
+from tmpbot_backend.identity import Identity
+from tmpbot_backend.prompt import load_layers, stable_block
 
 PRMT = Path(__file__).resolve().parents[2] / "BOTS" / "PRMT"
 
@@ -73,14 +75,37 @@ def test_layer_headers_are_stripped(layers):
 
 def test_fees_carry_lous_ranges(layers):
     rules = layers.rules
-    for line in (
-        "Risk briefing or screening: about ¥3 million to ¥6 million.",
-        "Bespoke analysis project: usually not less than about "
-        "¥7.5 million, up to about ¥20 million.",
-        "about ¥30 million a year, up to about ¥60 million a year.",
-        "minimum six months, about ¥1.5 million to ¥3 million a month.",
-        "have never cost less than ¥7.5 million.",
-    ):
-        assert line in rules
+    assert "[[FEE_RANGES]]" in rules
     assert "never as a list" in rules
     assert "Lou Munden" not in rules
+    text = default_ranges_text()
+    for line in (
+        "about ¥3 million to ¥6 million",
+        "usually not less than about ¥7.5 million, up to about ¥20 million",
+        "about ¥30 million to ¥60 million a year",
+        "about ¥1.5 million to ¥3 million a month",
+        "have never cost less than ¥7.5 million",
+    ):
+        assert line in text
+
+
+def test_fees_follow_the_reply_language(layers):
+    rules = layers.rules
+    assert "Japanese replies use yen" in rules
+    assert "French, German and Italian replies use euros" in rules
+    assert "English, Spanish and Portuguese replies use US dollars" in rules
+    assert "never convert figures yourself" in rules
+    assert "asks for yen, US dollars or euros, use that column" in rules
+    assert "yen | US dollars | euros" in rules
+
+
+def test_stable_block_fills_the_fee_lines(layers):
+    identity = Identity(plan="anonymous")
+    block = stable_block(layers, identity, "anthropic/claude-haiku-5-5",
+                         True)
+    assert "[[FEE_RANGES]]" not in block
+    assert default_ranges_text() in block
+    block = stable_block(layers, identity, "anthropic/claude-haiku-5-5",
+                         True, fee_ranges="- Test fee: about ¥1 million.")
+    assert "- Test fee: about ¥1 million." in block
+    assert "[[FEE_RANGES]]" not in block

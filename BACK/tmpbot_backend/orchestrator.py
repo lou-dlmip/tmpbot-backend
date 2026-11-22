@@ -32,6 +32,7 @@ from . import wire
 from .adaptive_thinking import writer_call_kwargs
 from .catalog import Catalog
 from .cost import TurnUsage, turn_cost_usd
+from .fees import FeeSchedule
 from .identity import Identity
 from .llm import LLMClient, LLMError
 from .prompt import PromptLayers, supports_prompt_cache, system_message
@@ -66,6 +67,8 @@ class ChatDeps:
         retriever: Reference-material search.
         usage: Usage log.
         conversations: Conversation store.
+        fees: Fee lines with daily exchange rates; None uses the
+            fallback rates in BOTS/POLC/fees.yaml.
     """
 
     policy: RoutingPolicy
@@ -75,6 +78,7 @@ class ChatDeps:
     retriever: Retriever
     usage: UsageLog
     conversations: ConversationStore
+    fees: Optional[FeeSchedule] = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +240,9 @@ async def stream_turn(turn: Turn, deps: ChatDeps) -> AsyncIterator[str]:
     fallback_used = False
     stop_reason = wire.STOP_END_TURN
     cards = CardCollector(deps.catalog, turn.identity, turn.language)
+    if deps.fees is not None:
+        # Background fetch when the day's rates are due; never waits.
+        deps.fees.maybe_refresh()
 
     try:
         bundle = await retrieve_for_turn(
@@ -338,6 +345,7 @@ def _build_messages(deps: ChatDeps, turn: Turn, model: str,
     system = system_message(
         deps.layers, turn.identity, model, turn.language, turn.audience,
         bundle, deps.policy.mistral_length_shaping,
+        deps.fees.ranges_text() if deps.fees is not None else None,
     )
     return writer_messages(system, turn.history,
                            deps.policy.history_messages)

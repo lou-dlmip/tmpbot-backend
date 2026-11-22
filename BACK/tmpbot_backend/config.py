@@ -100,6 +100,7 @@ class Settings:
         jwt_audience: Expected access-token audience
             (``SUPABASE_JWT_AUDIENCE``).
         routing_file: The writer routing policy.
+        fees_file: Typical project fees in yen (the chat's "Fees" rule).
         prompt_dir: The prompt layers.
         cops_dir: Published content, for checking card ids.
     """
@@ -124,6 +125,7 @@ class Settings:
     supabase_url: Optional[str] = None
     jwt_audience: str = "authenticated"
     routing_file: Path = REPO_ROOT / "BOTS" / "POLC" / "llm_routing.yaml"
+    fees_file: Path = REPO_ROOT / "BOTS" / "POLC" / "fees.yaml"
     prompt_dir: Path = REPO_ROOT / "BOTS" / "PRMT"
     cops_dir: Path = REPO_ROOT / "COPS"
 

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from .fees import FEE_RANGES_TOKEN, default_ranges_text
 from .identity import Identity
 from .retrieval import RetrievalBundle
 
@@ -148,19 +149,28 @@ def is_mistral(model: str) -> bool:
 
 
 def stable_block(layers: PromptLayers, identity: Identity, model: str,
-                 length_shaping: bool) -> str:
+                 length_shaping: bool,
+                 fee_ranges: Optional[str] = None) -> str:
     """The cacheable part: voice, rules and the plan's layer.
+
+    The fee lines change once a day with the exchange rate, so the
+    cache turns over daily; within a day the block is stable.
 
     Args:
         layers: Prompt layers.
         identity: The caller; picks gating or access.
         model: Writer model.
         length_shaping: Whether Mistral gets the length layer.
+        fee_ranges: Rendered fee lines (fees.FeeSchedule); None uses
+            the fallback rates in BOTS/POLC/fees.yaml.
 
     Returns:
         str: The stable text.
     """
-    parts = [layers.voice, layers.rules,
+    rules = layers.rules.replace(
+        FEE_RANGES_TOKEN,
+        fee_ranges if fee_ranges is not None else default_ranges_text())
+    parts = [layers.voice, rules,
              layers.access if identity.subscriber else layers.gating]
     if length_shaping and is_mistral(model):
         parts.append(layers.length_mistral)
@@ -251,7 +261,8 @@ def turn_block(language: str, audience: Optional[str],
 def system_message(layers: PromptLayers, identity: Identity, model: str,
                    language: str, audience: Optional[str],
                    bundle: RetrievalBundle,
-                   length_shaping: bool = True) -> dict[str, Any]:
+                   length_shaping: bool = True,
+                   fee_ranges: Optional[str] = None) -> dict[str, Any]:
     """Build the system message for one writer call.
 
     Anthropic models get two content blocks with ``cache_control`` on
@@ -265,11 +276,13 @@ def system_message(layers: PromptLayers, identity: Identity, model: str,
         audience: "Asking as" key, or None.
         bundle: Retrieved material.
         length_shaping: Mistral length layer switch.
+        fee_ranges: Rendered fee lines; None uses the fallback rates.
 
     Returns:
         dict[str, Any]: The ``{"role": "system", ...}`` message.
     """
-    stable = stable_block(layers, identity, model, length_shaping)
+    stable = stable_block(layers, identity, model, length_shaping,
+                          fee_ranges)
     turn = turn_block(language, audience, bundle)
     if supports_prompt_cache(model):
         return {

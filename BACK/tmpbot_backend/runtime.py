@@ -24,6 +24,7 @@ from .embedding import (
     OpenAIQueryEmbedder,
     load_embedding_config,
 )
+from .fees import FeeSchedule
 from .identity import (
     JwksVerifier,
     NoTokenVerifier,
@@ -123,6 +124,10 @@ def build_runtime(settings: Settings) -> Runtime:
     policy = load_policy(settings.routing_file)
     layers = load_layers(settings.prompt_dir)
     catalog = load_catalog(settings.cops_dir)
+    # Daily exchange rates only when a real writer runs; the fake writer
+    # (tests, local UI work) keeps the fallback rates and never calls out.
+    fees = FeeSchedule.from_file(settings.fees_file,
+                                 fetch=settings.llm_provider == "litellm")
 
     if settings.llm_provider == "litellm":
         llm = LiteLLMClient()
@@ -168,7 +173,7 @@ def build_runtime(settings: Settings) -> Runtime:
         verifier = NoTokenVerifier()
     deps = ChatDeps(policy=policy, layers=layers, catalog=catalog,
                     llm=llm, retriever=retriever, usage=usage,
-                    conversations=conversations)
+                    conversations=conversations, fees=fees)
     return Runtime(deps=deps, visitors=visitors, limiter=limiter,
                    turnstile=turnstile, verifier=verifier,
                    downloads=NoDownloads())
