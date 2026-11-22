@@ -18,6 +18,22 @@
 # because most translations are still drafts (never retrieved) and the
 # model writes in the visitor's language whatever the source language.
 #
+# Audience pages (COPS/AUDI, doc_type audience_page) are TMP's topic copy
+# written for one "Asking as" audience; the audience sits in the chunk
+# metadata. When the visitor picked an audience, other audiences' pages
+# are excluded (in SQL, before the candidate limit, so they never take a
+# slot) and the visitor's own pages get a small score boost. With no
+# audience, or "just curious", audience pages are searched like any
+# document, but only the best-scoring page per topic is kept: the five
+# versions of a topic share most of their facts, and without that rule
+# they would crowd case studies out of the six passages. Excluding them
+# instead would lose facts that only these pages hold (CSPARC, the RUSI
+# work, the battery-subsidy advice). In both cases at most
+# AUDIENCE_PAGE_LIMIT pages are kept per search, so case studies (the
+# only documents that can become cards) keep their places. The audience
+# rules only remove or reorder passages; they never widen the access
+# tiers.
+#
 # MemoryRetriever implements the same rules over the COPS/ files, for
 # local work without a database and for unit tests.
 #
@@ -31,7 +47,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional, Protocol, Sequence
 
@@ -48,9 +64,28 @@ MAX_TEASERS = 3
 # (merge_bundles).
 CARRY_SLOTS = 3
 CANDIDATES_PER_LANGUAGE = 8
+# Every fused row of match_corpus_chunks (two arms of its default
+# candidate_count of 40), so the audience filter sees them all.
+FUSED_ROWS = 80
 
 PUBLIC = "public"
 SUBSCRIBER = "subscriber"
+
+# "Asking as" keys that have audience pages: prompt.AUDIENCES without
+# "just_curious" (prompt imports this module, so the list is repeated
+# here; a test keeps the two equal, and the frontmatter validator uses
+# the same values).
+AUDIENCE_PAGE_KEYS = ("investor", "corporate", "government", "funder",
+                      "non_profit")
+# Score multiplier for the visitor's own audience pages. Fused scores
+# differ by about 1/(60+rank)^2 per rank, so 1.1 lifts a page several
+# ranks: enough to win a place among the six, not to bury the case
+# studies.
+AUDIENCE_BOOST = 1.1
+# Most audience pages (documents, with all their chunks) one search
+# keeps. Their copy is broad, so without a cap they fill the passages
+# that case studies need.
+AUDIENCE_PAGE_LIMIT = 2
 
 
 @dataclass(frozen=True)
@@ -66,6 +101,9 @@ class Passage:
         access_tier: ``public`` or ``subscriber``.
         score: Fused relevance score, higher is better.
         year: Year from the frontmatter, when known.
+        audience: For an audience page, the audience it was written
+            for; None for every other document.
+        topic: For an audience page, its topic id.
     """
 
     doc_id: str
@@ -76,6 +114,8 @@ class Passage:
     access_tier: str
     score: float = 0.0
     year: Optional[int] = None
+    audience: Optional[str] = None
+    topic: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -114,13 +154,15 @@ class Retriever(Protocol):
     """Finds reference material for a question."""
 
     async def retrieve(self, query: str, language: str,
-                       identity: Identity) -> RetrievalBundle:
+                       identity: Identity,
+                       audience: Optional[str] = None) -> RetrievalBundle:
         """Retrieve material for one question.
 
         Args:
             query: Search text.
             language: The visitor's locale.
             identity: The caller; decides the tiers.
+            audience: The "Asking as" key, or None.
 
         Returns:
             RetrievalBundle: Passages and teasers.
@@ -172,6 +214,75 @@ def enforce_tiers(passages: Sequence[Passage],
             log.error("gated passage reached the backend filter; dropped",
                       extra={"doc_id": p.doc_id, "plan": identity.plan})
     return kept
+
+
+def page_audience(audience: Optional[str]) -> Optional[str]:
+    """The audience whose pages a visitor should see, if any.
+
+    Args:
+        audience: The "Asking as" key, or None.
+
+    Returns:
+        Optional[str]: The key when it has audience pages; None for no
+        audience, "just_curious" or an unknown value.
+    """
+    return audience if audience in AUDIENCE_PAGE_KEYS else None
+
+
+def apply_audience(passages: Sequence[Passage],
+                   audience: Optional[str]) -> list[Passage]:
+    """Apply the audience rules to candidate passages.
+
+    With an audience: drop other audiences' pages and boost the
+    visitor's own. Without one: keep only the best-scoring page per
+    topic. Either way, keep at most ``AUDIENCE_PAGE_LIMIT`` pages, the
+    best ones, each with all of its chunks. Other documents pass through
+    unchanged. Nothing here adds a passage, so the tier filtering done
+    before and after still holds.
+
+    Args:
+        passages: Candidates (any order).
+        audience: The "Asking as" key, or None.
+
+    Returns:
+        list[Passage]: The kept passages, best first.
+    """
+    key = page_audience(audience)
+    candidates: list[Passage] = []
+    for p in passages:
+        if p.audience is None or key is None:
+            candidates.append(p)
+        elif p.audience == key:
+            candidates.append(replace(p, score=p.score * AUDIENCE_BOOST))
+    candidates.sort(key=lambda p: (-p.score, p.doc_id))
+    winners: list[str] = []
+    topics: set[str] = set()
+    for p in candidates:
+        if p.audience is None or p.doc_id in winners:
+            continue
+        topic = p.topic or p.doc_id
+        if len(winners) < AUDIENCE_PAGE_LIMIT and topic not in topics:
+            winners.append(p.doc_id)
+            topics.add(topic)
+    return [p for p in candidates
+            if p.audience is None or p.doc_id in winners]
+
+
+def _metadata_text(metadata: Any, key: str) -> Optional[str]:
+    """Read a string field from chunk metadata.
+
+    Args:
+        metadata: The JSONB metadata.
+        key: Field name.
+
+    Returns:
+        Optional[str]: The value when it is a non-empty string.
+    """
+    if isinstance(metadata, dict):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def merge_passages(passages: Sequence[Passage], language: str,
@@ -277,12 +388,33 @@ def _year(metadata: Any) -> Optional[int]:
 # Postgres
 # ----------------------------------------------------------------------
 
-SEARCH_SQL = (
-    "SELECT doc_id, doc_type, language, title, chunk_text, access_tier, "
-    "score, metadata "
-    "FROM public.match_corpus_chunks(%s::vector, %s, %s, %s, %s, "
-    "match_embedding_model => %s)"
-)
+# The audience filter wraps match_corpus_chunks instead of changing it:
+# the function returns every fused row (FUSED_ROWS) with its metadata,
+# other audiences' pages are dropped here, before any limit, and the
+# best `per_kind` rows of each kind come back: audience pages and other
+# documents are ranked apart, so pages can never use up the other
+# documents' candidate places. With no audience (NULL) no page is
+# dropped. The tier list and row level security still apply inside the
+# function, which is unchanged.
+SEARCH_SQL = """
+SELECT doc_id, doc_type, language, title, chunk_text, access_tier,
+       score, metadata
+  FROM (
+      SELECT m.*,
+             row_number() OVER (
+                 PARTITION BY (m.metadata->>'audience') IS NULL
+                 ORDER BY m.score DESC, m.chunk_id
+             ) AS kind_rank
+        FROM public.match_corpus_chunks(
+                 %(vector)s::vector, %(query)s, %(language)s, %(tiers)s,
+                 %(fused)s, match_embedding_model => %(model)s) m
+       WHERE %(audience)s::text IS NULL
+          OR m.metadata->>'audience' IS NULL
+          OR m.metadata->>'audience' = %(audience)s::text
+  ) ranked
+ WHERE kind_rank <= %(per_kind)s
+ ORDER BY score DESC, chunk_id
+"""
 
 # Gated documents whose title, summary or topics share a word with the
 # question. The OR-ed query mirrors match_corpus_chunks' lexical arm.
@@ -327,13 +459,15 @@ class PgRetriever:
         self.embedder = embedder
 
     async def retrieve(self, query: str, language: str,
-                       identity: Identity) -> RetrievalBundle:
+                       identity: Identity,
+                       audience: Optional[str] = None) -> RetrievalBundle:
         """Retrieve passages and, for non-subscribers, teasers.
 
         Args:
             query: Search text.
             language: The visitor's locale.
             identity: The caller.
+            audience: The "Asking as" key, or None.
 
         Returns:
             RetrievalBundle: The material.
@@ -341,11 +475,12 @@ class PgRetriever:
         vector = await self.embedder.embed_query(query)
         literal = vector_literal(vector)
         return await asyncio.to_thread(
-            self._search, literal, query, language, identity
+            self._search, literal, query, language, identity, audience
         )
 
     def _search(self, literal: str, query: str, language: str,
-                identity: Identity) -> RetrievalBundle:
+                identity: Identity,
+                audience: Optional[str] = None) -> RetrievalBundle:
         """Run the searches in one read-only transaction.
 
         Args:
@@ -353,27 +488,34 @@ class PgRetriever:
             query: Search text.
             language: The visitor's locale.
             identity: The caller.
+            audience: The "Asking as" key, or None.
 
         Returns:
             RetrievalBundle: The material.
         """
         langs = search_languages(language)
         tiers = allowed_tiers(identity)
+        key = page_audience(audience)
         found: list[Passage] = []
         teasers: list[Teaser] = []
         with self.db.connect() as conn:
             as_app_role(conn, identity)
             for lang in langs:
-                rows = conn.execute(SEARCH_SQL, (
-                    literal, query, lang, tiers, CANDIDATES_PER_LANGUAGE,
-                    self.embedder.model,
-                )).fetchall()
-                found.extend(
+                rows = conn.execute(SEARCH_SQL, {
+                    "vector": literal, "query": query, "language": lang,
+                    "tiers": tiers, "fused": FUSED_ROWS,
+                    "model": self.embedder.model, "audience": key,
+                    "per_kind": CANDIDATES_PER_LANGUAGE,
+                }).fetchall()
+                candidates = apply_audience([
                     Passage(doc_id=r[0], doc_type=r[1], language=r[2],
                             title=r[3], text=r[4], access_tier=r[5],
-                            score=float(r[6]), year=_year(r[7]))
+                            score=float(r[6]), year=_year(r[7]),
+                            audience=_metadata_text(r[7], "audience"),
+                            topic=_metadata_text(r[7], "topic"))
                     for r in rows
-                )
+                ], key)
+                found.extend(candidates[:CANDIDATES_PER_LANGUAGE])
             if not identity.subscriber:
                 rows = conn.execute(
                     TEASER_SQL, (query, langs, MAX_TEASERS * 2)
@@ -413,7 +555,7 @@ def _dedupe_teasers(teasers: Sequence[Teaser],
 # ----------------------------------------------------------------------
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
-_SECTIONS = ("CASE", "ABOU", "LEAD", "PUBL")
+_SECTIONS = ("CASE", "ABOU", "LEAD", "PUBL", "AUDI")
 _TYPE_MAP = {"practice-areas": "practice_areas"}
 
 
@@ -430,6 +572,8 @@ class _Doc:
     access_tier: str
     year: Optional[int]
     words: frozenset[str]
+    audience: Optional[str] = None
+    topic: Optional[str] = None
 
 
 def _words(text: str) -> frozenset[str]:
@@ -502,6 +646,8 @@ class MemoryRetriever:
                 body = _body(path)
                 summary = str(meta.get("summary") or "")
                 year = meta.get("year")
+                audience = meta.get("audience")
+                topic = meta.get("topic")
                 docs.append(_Doc(
                     doc_id=str(meta.get("id")),
                     doc_type=doc_type,
@@ -512,17 +658,22 @@ class MemoryRetriever:
                     access_tier=str(meta.get("access_tier", PUBLIC)),
                     year=year if isinstance(year, int) else None,
                     words=_words(f"{title} {summary} {body}"),
+                    audience=audience if isinstance(audience, str)
+                    else None,
+                    topic=topic if isinstance(topic, str) else None,
                 ))
         return cls(docs)
 
     async def retrieve(self, query: str, language: str,
-                       identity: Identity) -> RetrievalBundle:
+                       identity: Identity,
+                       audience: Optional[str] = None) -> RetrievalBundle:
         """Retrieve by shared words.
 
         Args:
             query: Search text.
             language: The visitor's locale.
             identity: The caller.
+            audience: The "Asking as" key, or None.
 
         Returns:
             RetrievalBundle: The material.
@@ -530,10 +681,13 @@ class MemoryRetriever:
         q = _words(query)
         langs = set(search_languages(language))
         tiers = set(allowed_tiers(identity))
+        key = page_audience(audience)
         scored = []
         teasers = []
         for d in self.docs:
             if d.language not in langs:
+                continue
+            if key is not None and d.audience not in (None, key):
                 continue
             overlap = len(q & d.words)
             if not overlap:
@@ -542,7 +696,7 @@ class MemoryRetriever:
             if d.access_tier in tiers:
                 scored.append(Passage(d.doc_id, d.doc_type, d.language,
                                       d.title, d.text, d.access_tier,
-                                      score, d.year))
+                                      score, d.year, d.audience, d.topic))
             elif d.access_tier == SUBSCRIBER:
                 head = _words(d.title + " " + d.summary)
                 if q & head:
@@ -550,7 +704,8 @@ class MemoryRetriever:
                         d.doc_id, d.doc_type, d.language, d.title,
                         d.summary)))
         teasers.sort(key=lambda st: (-st[0], st[1].doc_id))
-        passages = merge_passages(enforce_tiers(scored, identity), language)
+        passages = merge_passages(
+            enforce_tiers(apply_audience(scored, key), identity), language)
         return RetrievalBundle(
             tuple(passages),
             tuple(_dedupe_teasers([t for _, t in teasers], language)),

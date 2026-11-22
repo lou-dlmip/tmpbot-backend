@@ -3,15 +3,15 @@ id: "transition-minerals"
 type: "case_study"
 language: "en"
 title: "Transition Minerals"
-version: "1.1"
-last_updated: 2026-11-15
+version: "1.2"
+last_updated: 2026-11-22
 source_lifecycle: "active"
 access_tier: "public"
 order: 2
 year: 2023
-date: "2023–present"
+date: "2023–2026"
 start_year: 2023
-end_year: null
+end_year: 2026
 topics:
   - "transition-minerals"
   - "critical-supply-chains"

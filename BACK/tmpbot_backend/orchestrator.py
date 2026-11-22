@@ -154,18 +154,22 @@ def carry_over_queries(history: Sequence[tuple[str, str]]) -> list[str]:
 async def retrieve_for_turn(retriever: Retriever,
                             history: Sequence[tuple[str, str]],
                             language: str,
-                            identity: Identity) -> RetrievalBundle:
+                            identity: Identity,
+                            audience: Optional[str] = None
+                            ) -> RetrievalBundle:
     """Retrieve for the current question and carry earlier material over.
 
     A fault in the current question's search raises, as before. A fault
     in a carry-over search is logged and ignored: the turn still has
-    its own material.
+    its own material. Every search uses the turn's audience, so earlier
+    questions' material follows the same audience rules.
 
     Args:
         retriever: The search.
         history: The conversation.
         language: Reply locale.
         identity: The caller.
+        audience: The "Asking as" key, or None.
 
     Returns:
         RetrievalBundle: The merged material, current question first.
@@ -175,8 +179,10 @@ async def retrieve_for_turn(retriever: Retriever,
     """
     queries = carry_over_queries(history)
     results = await asyncio.gather(
-        retriever.retrieve(retrieval_query(history), language, identity),
-        *(retriever.retrieve(q, language, identity) for q in queries),
+        retriever.retrieve(retrieval_query(history), language, identity,
+                           audience=audience),
+        *(retriever.retrieve(q, language, identity, audience=audience)
+          for q in queries),
         return_exceptions=True,
     )
     primary = results[0]
@@ -246,7 +252,8 @@ async def stream_turn(turn: Turn, deps: ChatDeps) -> AsyncIterator[str]:
 
     try:
         bundle = await retrieve_for_turn(
-            deps.retriever, turn.history, turn.language, turn.identity
+            deps.retriever, turn.history, turn.language, turn.identity,
+            audience=turn.audience,
         )
     except Exception:  # noqa: BLE001 - any retrieval fault ends the turn
         log.exception("retrieval failed", extra={"message_id":

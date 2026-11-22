@@ -3,16 +3,16 @@ id: "transition-minerals"
 type: "case_study"
 language: "ja"
 title: "移行鉱物"
-version: "1.1"
-last_updated: 2026-11-15
+version: "1.2"
+last_updated: 2026-11-22
 source_lifecycle: "draft"
 translation: "machine"
 access_tier: "public"
 order: 2
 year: 2023
-date: "2023年–現在"
+date: "2023年–2026年"
 start_year: 2023
-end_year: null
+end_year: 2026
 topics:
   - "transition-minerals"
   - "critical-supply-chains"

@@ -8,6 +8,7 @@ One copy of every piece of content that is both a page and chat grounding (ADR-0
 | `LEAD/` | Leadership bios | `{id}_{lang}.md`, 3 ids |
 | `ABOU/` | About, Our Story, timeline, practice areas | `about`, `our-story`, `timeline`, `practice-areas` |
 | `PUBL/` | Subscriber-only publications (Phase 7) | empty for now |
+| `AUDI/` | Audience pages: topic copy for one "Asking as" audience. **Chat only, never a site page or a card.** See `AUDI/README.md`. | `{audience}-{topic}_en.md`, 24 ids |
 
 - **Format:** `DOCS/STND/frontmatter_schema.md`. Check with `TOOL/.venv/bin/python3 TOOL/validate_frontmatter.py` (CI runs it).
 - **Languages:** one file per language, sharing the `id`. English is the source and is `active`. Every other language is `draft` until a native speaker reviews it and sets `translation: "reviewed"`; drafts are neither shown nor retrieved, and the page falls back to English.

@@ -45,6 +45,7 @@ def test_voice_tailors_to_every_audience(layers):
                   "Non-Profit"):
         assert f"- {label}:" in layers.voice
     assert "never the facts" in layers.voice
+    assert "carries an audience attribute" in layers.voice
 
 
 def test_length_allows_150_words_for_detail(layers):

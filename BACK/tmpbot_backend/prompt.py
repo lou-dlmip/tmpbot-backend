@@ -205,7 +205,9 @@ def reference_block(bundle: RetrievalBundle) -> str:
     """Render the retrieved material.
 
     Attribute order is fixed (id, doc_type, access, title) because the
-    local stand-in writer reads it.
+    local stand-in writer reads it. An audience page also carries the
+    audience it was written for, so the writer knows whose terms its
+    copy uses.
 
     Args:
         bundle: Passages and teasers.
@@ -218,11 +220,12 @@ def reference_block(bundle: RetrievalBundle) -> str:
         lines.append("No reference material matched this question.")
     for p in bundle.passages:
         year = f' year="{p.year}"' if p.year else ""
+        aud = f' audience="{_attr(p.audience)}"' if p.audience else ""
         lines.append(
             f'<reference id="{_attr(p.doc_id)}" '
             f'doc_type="{_attr(p.doc_type)}" '
             f'access="{_attr(p.access_tier)}" title="{_attr(p.title)}"'
-            f'{year} language="{_attr(p.language)}">\n'
+            f'{year} language="{_attr(p.language)}"{aud}>\n'
             f"{_body(p.text)}\n</reference>"
         )
     for t in bundle.teasers:

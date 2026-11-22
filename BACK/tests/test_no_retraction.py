@@ -175,14 +175,16 @@ class _StubRetriever:
         self.table = table
         self.fail_on = set(fail_on)
         self.queries = []
+        self.audiences = []
 
-    async def retrieve(self, query, language, identity):
+    async def retrieve(self, query, language, identity, audience=None):
         """Return the bundle for ``query``.
 
         Args:
             query: Search text.
             language: Locale.
             identity: Caller.
+            audience: "Asking as" key, recorded for the threading test.
 
         Returns:
             RetrievalBundle: The bundle.
@@ -191,6 +193,7 @@ class _StubRetriever:
             RuntimeError: For a query listed in ``fail_on``.
         """
         self.queries.append(query)
+        self.audiences.append(audience)
         if query in self.fail_on:
             raise RuntimeError("boom")
         return _bundle(*self.table.get(query, ()))
