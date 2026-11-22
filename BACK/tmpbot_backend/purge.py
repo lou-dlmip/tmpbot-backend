@@ -6,9 +6,10 @@
 #   * anonymous visitors and their unclaimed conversations, 30 days after
 #     the visitor was last seen (Lou, 2026-11-15);
 #   * rate-limit counters, 14 days after their window started;
-#   * contact submissions, TMP Access applications and usage_log only when
-#     a period is configured. Until Yumiko and the lawyer answer, the
-#     default is "keep" (proposed: 2 years, 2 years, 1 year).
+#   * contact submissions, TMP Access applications, problem reports and
+#     usage_log only when a period is configured. The default is "keep";
+#     production sets 1460 days (4 years) for contact messages,
+#     applications and problem reports, and 730 for usage_log.
 #
 # Every period is an environment variable (INFR/env_inventory.md), so a
 # change needs no code. The job is idempotent: a second run the same day
@@ -47,12 +48,14 @@ STATEMENT_TIMEOUT_MS = 120_000
 KEEP = "keep"
 
 # Variable names and defaults. The first two follow Lou's decision of
-# 2026-11-15 and cannot be "keep"; the other three wait for the lawyer.
+# 2026-11-15 and cannot be "keep"; the others default to keep and are set
+# per environment (INFR/render.yaml).
 VISITOR_DAYS_ENV = "TMPBOT_RETENTION_VISITOR_DAYS"
 RATE_LIMIT_DAYS_ENV = "TMPBOT_RETENTION_RATE_LIMIT_DAYS"
 CONTACT_DAYS_ENV = "TMPBOT_RETENTION_CONTACT_DAYS"
 APPLICATION_DAYS_ENV = "TMPBOT_RETENTION_APPLICATION_DAYS"
 USAGE_LOG_DAYS_ENV = "TMPBOT_RETENTION_USAGE_LOG_DAYS"
+PROBLEM_REPORT_DAYS_ENV = "TMPBOT_RETENTION_PROBLEM_REPORT_DAYS"
 
 DEFAULT_VISITOR_DAYS = 30
 DEFAULT_RATE_LIMIT_DAYS = 14
@@ -81,6 +84,8 @@ class RetentionPolicy:
         contact_days: Contact submissions; None keeps them.
         application_days: TMP Access applications; None keeps them.
         usage_log_days: usage_log rows; None keeps them.
+        problem_report_days: Problem reports (migration 0012); None
+            keeps them.
     """
 
     visitor_days: int = DEFAULT_VISITOR_DAYS
@@ -88,6 +93,7 @@ class RetentionPolicy:
     contact_days: Optional[int] = None
     application_days: Optional[int] = None
     usage_log_days: Optional[int] = None
+    problem_report_days: Optional[int] = None
 
 
 def parse_days(name: str, raw: Optional[str], default: Optional[int],
@@ -151,6 +157,9 @@ def policy_from_env(env: Mapping[str, str]) -> RetentionPolicy:
         usage_log_days=parse_days(
             USAGE_LOG_DAYS_ENV, env.get(USAGE_LOG_DAYS_ENV), None,
             allow_keep=True),
+        problem_report_days=parse_days(
+            PROBLEM_REPORT_DAYS_ENV, env.get(PROBLEM_REPORT_DAYS_ENV), None,
+            allow_keep=True),
     )
 
 
@@ -171,7 +180,7 @@ class PurgeResult:
 
 def run_purge(conn: psycopg.Connection, policy: RetentionPolicy,
               dry_run: bool = False) -> list[PurgeResult]:
-    """Call the purge function in one transaction.
+    """Call the purge function in one transaction (migration 0012).
 
     The caller commits. On a dry run the function only counts.
 
@@ -189,9 +198,10 @@ def run_purge(conn: psycopg.Connection, policy: RetentionPolicy,
     conn.execute(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}")
     rows = conn.execute(
         "SELECT target, cutoff, affected "
-        "FROM public.tmpbot_purge_expired(%s, %s, %s, %s, %s, %s)",
+        "FROM public.tmpbot_purge_expired(%s, %s, %s, %s, %s, %s, %s)",
         (policy.visitor_days, policy.rate_limit_days, policy.contact_days,
-         policy.application_days, policy.usage_log_days, dry_run),
+         policy.application_days, policy.usage_log_days, dry_run,
+         policy.problem_report_days),
     ).fetchall()
     return [PurgeResult(target=r[0], cutoff=r[1].isoformat(),
                         affected=int(r[2])) for r in rows]

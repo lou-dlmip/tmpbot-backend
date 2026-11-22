@@ -1,5 +1,5 @@
 # The daily data clean-up (M5.8): configuration, the command line, and
-# migration 0010's tmpbot_purge_expired() on a real Postgres.
+# tmpbot_purge_expired() (migrations 0010 and 0012) on a real Postgres.
 #
 # Author: Lou Munden
 # Copyright 2026 合同会社 TMP Climate and Lou Munden
@@ -52,6 +52,15 @@ def test_proposed_lawyer_periods_parse():
     })
     assert (policy.contact_days, policy.application_days,
             policy.usage_log_days) == (730, 730, 365)
+
+
+def test_problem_report_period_parses_and_defaults_to_keep():
+    """The new variable follows the same rules as the contact period."""
+    assert policy_from_env({}).problem_report_days is None
+    env = {"TMPBOT_RETENTION_PROBLEM_REPORT_DAYS": " 1460 "}
+    assert policy_from_env(env).problem_report_days == 1460
+    with pytest.raises(ConfigError):
+        policy_from_env({"TMPBOT_RETENTION_PROBLEM_REPORT_DAYS": "0"})
 
 
 @pytest.mark.parametrize("raw", ["keep", "KEEP", " Keep ", "", None])
@@ -124,7 +133,7 @@ def test_main_passes_policy_and_dry_run(monkeypatch):
 
 TABLES = ("messages", "conversations", "anonymous_visitors",
           "request_rate_limits", "contact_submissions",
-          "access_applications", "usage_log")
+          "access_applications", "usage_log", "problem_reports")
 
 
 @pytest.fixture
@@ -260,7 +269,7 @@ def test_rate_limit_rows_go_after_fourteen_days(db):
 
 
 def _old_records(conn, days_ago):
-    """Insert one contact submission, application and usage row."""
+    """Insert one contact message, application, usage and report row."""
     conn.execute(
         "INSERT INTO public.contact_submissions "
         "(created_at, name, email, language) VALUES "
@@ -276,6 +285,11 @@ def _old_records(conn, days_ago):
         "INSERT INTO public.usage_log (created_at, model, plan) VALUES "
         "(now() - make_interval(days => %s), 'm', 'anonymous')",
         (days_ago,))
+    conn.execute(
+        "INSERT INTO public.problem_reports "
+        "(created_at, category, language) VALUES "
+        "(now() - make_interval(days => %s), 'other', 'en')",
+        (days_ago,))
 
 
 def test_undecided_tables_are_kept_by_default(db):
@@ -286,9 +300,10 @@ def test_undecided_tables_are_kept_by_default(db):
     assert "contact_submissions" not in report
     assert "access_applications" not in report
     assert "usage_log" not in report
+    assert "problem_reports" not in report
     with psycopg.connect(db) as conn:
         for table in ("contact_submissions", "access_applications",
-                      "usage_log"):
+                      "usage_log", "problem_reports"):
             assert _count(conn, table) == 1
 
 
@@ -299,8 +314,9 @@ def test_configured_periods_purge_undecided_tables(db):
         _old_records(conn, 400)   # between one and two years
         _old_records(conn, 10)
     policy = RetentionPolicy(contact_days=730, application_days=730,
-                             usage_log_days=365)
+                             usage_log_days=365, problem_report_days=730)
     report = _report(purge.purge_database(db, policy))
+    assert report["problem_reports"] == 1
     assert report["contact_submissions"] == 1
     assert report["access_applications"] == 1
     assert report["usage_log"] == 2
@@ -308,6 +324,21 @@ def test_configured_periods_purge_undecided_tables(db):
         assert _count(conn, "contact_submissions") == 2
         assert _count(conn, "access_applications") == 2
         assert _count(conn, "usage_log") == 1
+        assert _count(conn, "problem_reports") == 2
+
+
+def test_problem_reports_purge_on_their_own_period(db):
+    """With 1460 days, a 1500-day-old report goes and a 1400-day one stays."""
+    with psycopg.connect(db, autocommit=True) as conn:
+        _old_records(conn, 1500)
+        _old_records(conn, 1400)
+    policy = RetentionPolicy(problem_report_days=1460)
+    report = _report(purge.purge_database(db, policy))
+    assert report["problem_reports"] == 1
+    assert "contact_submissions" not in report
+    with psycopg.connect(db) as conn:
+        assert _count(conn, "problem_reports") == 1
+        assert _count(conn, "contact_submissions") == 2
 
 
 def test_dry_run_counts_and_deletes_nothing(db):
@@ -316,8 +347,9 @@ def test_dry_run_counts_and_deletes_nothing(db):
         old = _visitor(conn, 60)
         _conversation(conn, visitor_id=old, messages=2)
         _old_records(conn, 800)
-    policy = RetentionPolicy(contact_days=730)
+    policy = RetentionPolicy(contact_days=730, problem_report_days=730)
     report = _report(purge.purge_database(db, policy, dry_run=True))
+    assert report["problem_reports"] == 1
     assert report["anonymous_visitors"] == 1
     assert report["unclaimed_conversations"] == 1
     assert report["contact_submissions"] == 1
@@ -326,6 +358,7 @@ def test_dry_run_counts_and_deletes_nothing(db):
         assert _count(conn, "conversations") == 1
         assert _count(conn, "messages") == 2
         assert _count(conn, "contact_submissions") == 1
+        assert _count(conn, "problem_reports") == 1
 
 
 def test_second_run_deletes_nothing(db):
@@ -342,13 +375,27 @@ def test_second_run_deletes_nothing(db):
 def test_function_refuses_bad_periods(db):
     """Zero, negative or missing required periods raise 22023."""
     with psycopg.connect(db) as conn:
-        for args in ((0, 14), (30, None), (30, 14, -1)):
+        for args in ((0, 14), (30, None), (30, 14, -1),
+                     (30, 14, None, None, None, False, 0)):
             with pytest.raises(psycopg.errors.InvalidParameterValue):
                 with conn.transaction():
                     placeholders = ", ".join(["%s"] * len(args))
                     conn.execute(
                         "SELECT * FROM public.tmpbot_purge_expired("
                         f"{placeholders})", args)
+
+
+def test_six_argument_call_still_works(db):
+    """A caller from before 0012 (six arguments) is not ambiguous."""
+    with psycopg.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT target FROM public.tmpbot_purge_expired("
+            "30, 14, NULL, NULL, NULL, true)").fetchall()
+        count = conn.execute(
+            "SELECT count(*) FROM pg_proc WHERE proname = "
+            "'tmpbot_purge_expired'").fetchone()[0]
+    assert len(rows) == 4
+    assert count == 1
 
 
 @pytest.mark.parametrize("role", ["anon", "authenticated"])
