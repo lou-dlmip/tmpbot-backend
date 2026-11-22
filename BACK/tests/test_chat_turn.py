@@ -291,7 +291,7 @@ def test_anthropic_prompt_is_cached_and_mistral_is_shaped(settings):
     _, llm, _ = _run(settings, [ScriptedReply(text="x")], language="fr")
     system = llm.calls[0].messages[0]["content"]
     assert isinstance(system, str)
-    assert "Hard limit: one paragraph, at most 4 sentences" in system
+    assert "Hard limit: at most 4 sentences" in system
     assert "Always reply in French" in system
     assert llm.calls[0].kwargs["max_tokens"] == 400
     assert "output_config" not in llm.calls[0].kwargs
