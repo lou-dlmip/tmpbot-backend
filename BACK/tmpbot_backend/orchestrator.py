@@ -35,7 +35,7 @@ from .cost import TurnUsage, turn_cost_usd
 from .identity import Identity
 from .llm import LLMClient, LLMError
 from .prompt import PromptLayers, supports_prompt_cache, system_message
-from .retrieval import RetrievalBundle, Retriever
+from .retrieval import RetrievalBundle, Retriever, merge_bundles
 from .routing import RoutingPolicy
 from .stores import (
     ConversationStore,
@@ -50,6 +50,8 @@ from .tools import CardCollector, tools_for
 log = logging.getLogger("tmpbot.orchestrator")
 
 MAX_TOOL_ITERATIONS = 3
+# Earlier user questions searched again for carry-over material.
+CARRY_OVER_QUESTIONS = 2
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,75 @@ def retrieval_query(history: Sequence[tuple[str, str]]) -> str:
     return " ".join(questions[-2:])
 
 
+def carry_over_queries(history: Sequence[tuple[str, str]]) -> list[str]:
+    """Earlier user questions to search again, most recent first.
+
+    The writer sees its earlier answers in the history but not the
+    material they came from. Searching the previous questions again
+    puts that material back in front of it, so it does not retract
+    accurate answers (see ``merge_bundles``).
+
+    Args:
+        history: The conversation; the last message is the current
+            question.
+
+    Returns:
+        list[str]: Up to ``CARRY_OVER_QUESTIONS`` questions, without
+        blanks or repeats, and without the current question.
+    """
+    questions = [c for r, c in history if r == "user"]
+    current = questions[-1].strip() if questions else ""
+    out: list[str] = []
+    for q in reversed(questions[:-1]):
+        text = q.strip()
+        if text and text != current and text not in out:
+            out.append(text)
+        if len(out) == CARRY_OVER_QUESTIONS:
+            break
+    return out
+
+
+async def retrieve_for_turn(retriever: Retriever,
+                            history: Sequence[tuple[str, str]],
+                            language: str,
+                            identity: Identity) -> RetrievalBundle:
+    """Retrieve for the current question and carry earlier material over.
+
+    A fault in the current question's search raises, as before. A fault
+    in a carry-over search is logged and ignored: the turn still has
+    its own material.
+
+    Args:
+        retriever: The search.
+        history: The conversation.
+        language: Reply locale.
+        identity: The caller.
+
+    Returns:
+        RetrievalBundle: The merged material, current question first.
+
+    Raises:
+        Exception: Whatever the retriever raises for the current query.
+    """
+    queries = carry_over_queries(history)
+    results = await asyncio.gather(
+        retriever.retrieve(retrieval_query(history), language, identity),
+        *(retriever.retrieve(q, language, identity) for q in queries),
+        return_exceptions=True,
+    )
+    primary = results[0]
+    if isinstance(primary, BaseException):
+        raise primary
+    carried = []
+    for result in results[1:]:
+        if isinstance(result, BaseException):
+            log.warning("carry-over retrieval failed; skipped",
+                        extra={"error": repr(result)})
+        else:
+            carried.append(result)
+    return merge_bundles(primary, carried)
+
+
 def writer_messages(system: dict[str, Any],
                     history: Sequence[tuple[str, str]],
                     keep: int) -> list[dict[str, Any]]:
@@ -167,8 +238,8 @@ async def stream_turn(turn: Turn, deps: ChatDeps) -> AsyncIterator[str]:
     cards = CardCollector(deps.catalog, turn.identity, turn.language)
 
     try:
-        bundle = await deps.retriever.retrieve(
-            retrieval_query(turn.history), turn.language, turn.identity
+        bundle = await retrieve_for_turn(
+            deps.retriever, turn.history, turn.language, turn.identity
         )
     except Exception:  # noqa: BLE001 - any retrieval fault ends the turn
         log.exception("retrieval failed", extra={"message_id":

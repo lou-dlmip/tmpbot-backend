@@ -44,6 +44,9 @@ log = logging.getLogger("tmpbot.retrieval")
 
 MAX_PASSAGES = 6
 MAX_TEASERS = 3
+# Passages of the MAX_PASSAGES budget kept for earlier turns' material
+# (merge_bundles).
+CARRY_SLOTS = 3
 CANDIDATES_PER_LANGUAGE = 8
 
 PUBLIC = "public"
@@ -193,6 +196,65 @@ def merge_passages(passages: Sequence[Passage], language: str,
     kept = [p for p in passages if doc_lang[p.doc_id] == p.language]
     kept.sort(key=lambda p: (-p.score, p.doc_id))
     return kept[:limit]
+
+
+def merge_bundles(primary: RetrievalBundle,
+                  carried: Sequence[RetrievalBundle],
+                  limit: int = MAX_PASSAGES,
+                  carry_slots: int = CARRY_SLOTS) -> RetrievalBundle:
+    """Merge the current question's material with earlier turns' material.
+
+    The reference block is rebuilt on every turn, so the writer sees its
+    earlier answers but not their sources. Keeping some of those sources
+    in the block stops it from doubting itself. The merge keeps the
+    total inside ``limit``:
+
+    * the current question's passages come first, in their own order;
+    * up to ``carry_slots`` passages from earlier turns follow, taken
+      round-robin (the most recent turn first), one per document;
+    * if earlier turns have fewer to give, the current question uses the
+      spare room, and the other way round.
+
+    Scores from different queries are not comparable, so nothing is
+    re-sorted. Teasers merge the same way, within ``MAX_TEASERS``.
+
+    Args:
+        primary: Material for the current question.
+        carried: Material for earlier questions, most recent first.
+        limit: Most passages in the result.
+        carry_slots: Passages reserved for earlier turns.
+
+    Returns:
+        RetrievalBundle: Merged, deduplicated material.
+    """
+    own: list[Passage] = []
+    seen: set[str] = set()
+    for p in primary.passages:
+        if p.doc_id not in seen:
+            seen.add(p.doc_id)
+            own.append(p)
+    queues = [list(b.passages) for b in carried]
+    extra: list[Passage] = []
+    while any(queues):
+        for queue in queues:
+            while queue:
+                p = queue.pop(0)
+                if p.doc_id not in seen:
+                    seen.add(p.doc_id)
+                    extra.append(p)
+                    break
+    take_carry = min(len(extra), carry_slots)
+    take_own = min(len(own), max(limit - take_carry, 0))
+    take_carry = min(len(extra), max(limit - take_own, 0))
+    passages = own[:take_own] + extra[:take_carry]
+
+    teasers: list[Teaser] = []
+    seen_teasers: set[str] = set()
+    for t in [*primary.teasers, *(t for b in carried for t in b.teasers)]:
+        if t.doc_id not in seen_teasers:
+            seen_teasers.add(t.doc_id)
+            teasers.append(t)
+    return RetrievalBundle(tuple(passages), tuple(teasers[:MAX_TEASERS]))
 
 
 def _year(metadata: Any) -> Optional[int]:
