@@ -6,4 +6,5 @@ BOTS/POLC/llm_routing.yaml.
 Author: Lou Munden
 Copyright 2026 合同会社 TMP Climate and Lou Munden
 -->
+Plain text only: never use asterisks, bold, bullet points or any other markdown, even for figures.
 Hard limit: at most 4 sentences and about 90 words; only when the visitor asks for detail, at most 150 words in two short paragraphs. Count your sentences before you answer; if there are too many, cut the least useful ones. Stop when the point is made; do not add a summary sentence.

@@ -49,6 +49,7 @@ def test_length_allows_150_words_for_detail(layers):
     assert "up to 150 words" in layers.voice
     assert "about 90 words" in layers.voice
     assert "at most 150 words" in layers.length_mistral
+    assert "Plain text only" in layers.length_mistral
 
 
 def test_rules_cover_review_notes(layers):
@@ -59,7 +60,7 @@ def test_rules_cover_review_notes(layers):
     assert "at most once in a conversation" in rules
     assert "Off-topic questions:" in rules
     assert "Fees:" in rules
-    assert "Do not invent a figure" in rules
+    assert "Do not give any other figure" in rules
     # The old Facts rule ended every gap with "suggest getting in touch".
     assert "suggest getting in touch" not in rules
 
@@ -68,3 +69,18 @@ def test_layer_headers_are_stripped(layers):
     for text in (layers.voice, layers.rules, layers.length_mistral):
         assert "<!--" not in text
         assert "Copyright" not in text
+
+
+def test_fees_carry_lous_ranges(layers):
+    rules = layers.rules
+    for line in (
+        "Risk briefing or screening: about ¥3 million to ¥6 million.",
+        "Bespoke analysis project: usually not less than about "
+        "¥7.5 million, up to about ¥20 million.",
+        "about ¥30 million a year, up to about ¥60 million a year.",
+        "minimum six months, about ¥1.5 million to ¥3 million a month.",
+        "have never cost less than ¥7.5 million.",
+    ):
+        assert line in rules
+    assert "never as a list" in rules
+    assert "Lou Munden" not in rules
