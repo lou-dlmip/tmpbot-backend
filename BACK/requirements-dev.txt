@@ -1,0 +1,11 @@
+# TMPBOT backend test dependencies, exact pins. Includes the runtime pins.
+#
+# httpx backs FastAPI's TestClient. Versions follow NINOBOT origin/main;
+# pytest matches TOOL/requirements.txt so CI resolves one version.
+#
+# Author: Lou Munden
+# Copyright 2026 合同会社 TMP Climate and Lou Munden
+
+-r requirements.txt
+httpx==0.27.2
+pytest==8.3.3

@@ -1,0 +1,35 @@
+# TMPBOT backend runtime dependencies, exact pins.
+#
+# Render installs this file (see INFR/render.yaml). Versions follow
+# NINOBOT origin/main's BACK/requirements.txt where the package is the
+# same, so both backends move together and known-good pins carry over.
+# Test-only packages live in requirements-dev.txt.
+#
+# Install locally into BACK/.venv:
+#   /home/lou2/venv/bin/python3 -m venv BACK/.venv
+#   BACK/.venv/bin/pip install -r BACK/requirements-dev.txt
+#
+# Author: Lou Munden
+# Copyright 2026 合同会社 TMP Climate and Lou Munden
+
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+
+# Error reporting. Initialised only when SENTRY_DSN_BACKEND is set
+# (tmpbot_backend/observability.py). NINOBOT pinned it but never called
+# init; TMPBOT does from Phase 2.
+sentry-sdk==2.18.0
+
+# Phase 5 chat. Versions follow NINOBOT origin/main.
+# LiteLLM is the provider layer behind tmpbot_backend/llm.py (ADR-0002).
+# Pinned exactly: LiteLLM upgrades are deliberate (NINOBOT ADR-0071 lists
+# the 1.53 streaming quirks adaptive_thinking.py works around).
+litellm==1.53.1
+# Postgres for retrieval, visitor counts, limits, conversations and
+# usage_log. Same pin as TOOL/requirements.txt.
+psycopg[binary]==3.2.3
+# BOTS/POLC/llm_routing.yaml and COPS frontmatter.
+PyYAML==6.0.3
+# Supabase access-token checks (tmpbot_backend/identity.py).
+pyjwt[crypto]==2.10.0

@@ -1,0 +1,84 @@
+# BOTS/POLC/llm_routing.yaml
+# Writer-model routing policy for TMPBOT (ADR-0002).
+#
+# Model choice lives here, never in code. BACK/tmpbot_backend/routing.py
+# (adapted from NINOBOT's model_routing.py) reads this file and resolves
+# a LiteLLM model id per locale. Prices for the usage log live here too,
+# so a model change and its price change in one place.
+#
+# Resolution order for a locale:
+#   defaults.locales[locale]  ->  defaults.locales["*"]
+#
+# Values below copy NINOBOT's origin/main defaults as of 2026-11-13:
+#   - French goes to Mistral Large (Claude-written French failed native
+#     review in NINOBOT, its M9.40 eval).
+#   - Every other locale goes to Claude Haiku 5.5 with low thinking
+#     effort (NINOBOT ADR-0071, 2026-10-15). BOOTSTRAP.md's "Haiku 4.5"
+#     predates that ADR and is stale.
+# D19: Lou accepted these models for now on 2026-11-15; revisit after the
+# first real trial.
+#
+# 2026-11-20 (first real-key trial): French is pinned to the dated id
+# mistral-large-2512 (Mistral Large 3), not mistral-large-latest. Mistral
+# moved the -latest alias to Mistral Large 4, a reasoning model that
+# cannot switch thinking off (reasoning_effort "none" is a 400 error). It
+# streams its chain of thought as list-shaped `content` chunks, which
+# crash LiteLLM 1.53.1's stream and spend the whole 400-token cap on
+# thinking. Never route a writer through a moving alias; move the pin
+# only after a live streamed trial (see BACK/tests/test_mistral_stream.py
+# for the stream shapes to check) and a native French review.
+#
+# Author: Lou Munden
+# Copyright 2026 合同会社 TMP Climate and Lou Munden
+
+defaults:
+  locales:
+    fr: mistral/mistral-large-2512
+    "*": anthropic/claude-haiku-5-5
+  # Soft length-budget block for Mistral writers (NINOBOT M24).
+  mistral_length_shaping: true
+  # null sends no temperature; the provider default applies.
+  temperature: null
+  # Thinking effort for adaptive-thinking writers (Haiku 5.5). Ignored
+  # by Mistral. NINOBOT found low as accurate as higher settings and the
+  # only level with a first word under about 10 s.
+  thinking_effort: low
+  # The prototype caps answers at 400 tokens. Thinking counts against
+  # max_tokens on Haiku 5.5 (NINOBOT ADR-0071), so Phase 5 sets the
+  # real cap after measuring; this value is a placeholder.
+  max_tokens: 400
+  # Used once, when the locale's writer fails before streaming any text
+  # (NINOBOT M9.40 (d): a Mistral outage falls back to Claude).
+  fallback: anthropic/claude-haiku-5-5
+  # Seconds before a writer call is abandoned and the visitor sees the
+  # localised fallback reply.
+  timeout_s: 60
+  # Conversation messages sent to the writer, newest last. Older turns
+  # are dropped to bound the cost of long chats.
+  history_messages: 12
+
+# List prices in USD per million tokens, for usage_log.cost_usd
+# (copied from NINOBOT origin/main BACK/ninobot_backend/cost.py,
+# 2026-11-13). Anthropic cache writes cost 1.25x and cache reads 0.1x
+# the input rate. A model missing here logs a warning and costs $0, so
+# add a row with every model change.
+prices:
+  anthropic/claude-haiku-5-5: {input: 0.10, output: 0.50}
+  anthropic/claude-sonnet-5-5: {input: 2.00, output: 10.00}
+  mistral/mistral-large-2512: {input: 2.00, output: 6.00}
+  mistral/mistral-large-latest: {input: 2.00, output: 6.00}
+  mistral/mistral-small-latest: {input: 0.30, output: 0.90}
+
+# Embedding model for the retrieval corpus (TOOL/index_corpus.py at
+# ingest, the backend at query time). Copied from NINOBOT origin/main
+# (TOOL/index_corpus.py: text-embedding-3-small, 1536 dimensions, cosine).
+# `dimensions` must equal corpus_chunks.embedding's VECTOR(1536) in
+# INFR/migrations/0002_corpus_chunks.sql; changing either needs a new
+# migration and a full re-index. Price per million input tokens, for the
+# indexer's dry-run estimate (NINOBOT's figure, 2025-12).
+# D19 accepted for now by Lou on 2026-11-15; nothing calls OpenAI until
+# TMPBOT has a key.
+embeddings:
+  model: openai/text-embedding-3-small
+  dimensions: 1536
+  price_usd_per_million_tokens: 0.02
